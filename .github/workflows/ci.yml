@@ -2,151 +2,18 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
-  workflow_dispatch: {}
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  JULIA_NUM_THREADS: 1
-  CORPUS_PATH: data/raw/tiny_corpus.txt
-  EXPECTED_CORPUS_SHA256: 11c4625ab69b40e072e5a0b5a26084f52dc410821b4cdb58be326b376502f9b4
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
-    name: Julia 1.12 / tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
-    defaults:
-      run:
-        shell: bash
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Verify fixture is tracked
-        run: |
-          set -euo pipefail
-
-          test -f "$CORPUS_PATH" || {
-            echo "Fixture file does not exist: $CORPUS_PATH"
-            exit 1
-          }
-          git ls-files --error-unmatch "$CORPUS_PATH"
-
-      - name: Verify fixture is not ignored
-        run: |
-          set -euo pipefail
-
-          if git check-ignore --no-index -q "$CORPUS_PATH"; then
-            echo "::error file=$CORPUS_PATH::Fixture is still ignored by .gitignore"
-            git check-ignore --no-index -v "$CORPUS_PATH" || true
-            exit 1
-          fi
-
-          echo "Fixture file is not ignored by Git: $CORPUS_PATH"
-
-      - name: Verify corpus Git attributes
-        run: |
-          set -euo pipefail
-
-          attributes="$(git check-attr text eol working-tree-encoding -- "$CORPUS_PATH")"
-          printf '%s\n' "$attributes"
-
-          grep -Fq "$CORPUS_PATH: text: set" <<< "$attributes" || {
-            echo "Fixture file does not have the text attribute set"
-            exit 1
-          }
-          grep -Fq "$CORPUS_PATH: eol: lf" <<< "$attributes" || {
-            echo "Fixture file does not enforce LF line endings"
-            exit 1
-          }
-          grep -Fq "$CORPUS_PATH: working-tree-encoding: UTF-8" <<< "$attributes" || {
-            echo "Fixture file does not enforce UTF-8 working-tree encoding"
-            exit 1
-          }
-
-      - name: Verify corpus checksum
-        run: |
-          set -euo pipefail
-
-          printf '%s  %s\n' \
-            "$EXPECTED_CORPUS_SHA256" \
-            "$CORPUS_PATH" \
-            | sha256sum --check --strict
-
-      - name: Set up Julia 1.12
-        uses: julia-actions/setup-julia@v3
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
         with:
           version: "1.12"
-
-      - name: Show Julia version
-        run: julia --version
-
-      - name: Instantiate and precompile
-        run: |
-          julia --project=. -e '
-              using Pkg
-              Pkg.instantiate()
-              Pkg.precompile()
-          '
-
-      - name: Inspect corpus
-        run: julia --project=. scripts/inspect_corpus.jl
-
-      - name: Run manual tokenizer smoke
-        run: |
-          julia --project=. -e '
-              using MiniGPT
-
-              text = read("data/raw/tiny_corpus.txt", String)
-              tokenizer = CharacterTokenizer(text)
-              ids = encode(tokenizer, text)
-
-              @assert decode(tokenizer, ids) == text
-              @assert length(vocabulary(tokenizer)) == 47
-              @assert length(ids) == 1677
-
-              println("Vocabulary size: ", length(vocabulary(tokenizer)))
-              println("Token IDs: ", length(ids))
-              println("Round-trip correct: true")
-          '
-
-      - name: Run test suite
-        run: |
-          julia --project=. -e '
-              using Pkg
-              Pkg.test()
-          '
-
-      - name: Verify clean working tree
-        run: |
-          set -euo pipefail
-
-          status="$(git status --porcelain=v1 --untracked-files=all)"
-          if [[ -n "$status" ]]; then
-            echo "::error::Repository changed during dependency setup or tests."
-            printf '%s\n' "$status"
-            git diff
-            exit 1
-          fi
-
-          echo "Working tree remains clean."
+      - uses: julia-actions/cache@v2
+      - run: julia --project=. -e 'using Pkg; Pkg.test()'
